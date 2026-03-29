@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gemini-03.1-flas"
+version = "0.1.0"
+requires-python = ">=3.14"
+dependencies = [
+    "google-genai",
+    "livekit-agents[google]~=1.4",
+    "mss",
+    "opencv-python",
+    "pillow",
+    "python-dotenv",
+    "sounddevice",
+]
