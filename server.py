@@ -24,7 +24,7 @@ load_dotenv(".env.local")
 
 app = FastAPI()
 
-MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash-native-audio-preview-12-2025")
+MODEL = os.environ.get("GEMINI_MODEL", "models/gemini-3.1-flash-live-preview")
 WEBHOOK_URL = "https://n8n.trueailab.com/webhook/trueailab"
 
 client = genai.Client(
