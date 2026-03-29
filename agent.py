@@ -33,7 +33,7 @@ CHUNK_SIZE = 1024
 
 MODEL = os.environ.get(
     "GEMINI_MODEL",
-    "models/gemini-3.1-flash-live-preview",
+    "gemini-3.1-flash-live-preview",
 )
 DEFAULT_MODE = "none"
 

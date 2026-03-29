@@ -24,7 +24,7 @@ load_dotenv(".env.local")
 
 app = FastAPI()
 
-MODEL = os.environ.get("GEMINI_MODEL", "models/gemini-3.1-flash-live-preview")
+MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
 WEBHOOK_URL = "https://n8n.trueailab.com/webhook/trueailab"
 
 client = genai.Client(
@@ -38,16 +38,30 @@ tools = [
             types.FunctionDeclaration(
                 name="save_customer_info",
                 description=(
-                    "Save the prospect's details. Call this ONCE only "
-                    "after you have collected all four: name, email, phone_number, usecase."
+                    "Save the prospect's details. Call this ONCE only, "
+                    "after you have collected ALL four pieces of information: "
+                    "name, email, phone_number, and usecase. "
+                    "Do NOT call this more than once per conversation."
                 ),
                 parameters=types.Schema(
                     type=Type.OBJECT,
                     properties={
-                        "name":         types.Schema(type=Type.STRING, description="Prospect's full name"),
-                        "email":        types.Schema(type=Type.STRING, description="Prospect's email address"),
-                        "phone_number": types.Schema(type=Type.STRING, description="Prospect's phone number"),
-                        "usecase":      types.Schema(type=Type.STRING, description="Business problem they described"),
+                        "name": types.Schema(
+                            type=Type.STRING,
+                            description="Prospect's full name",
+                        ),
+                        "email": types.Schema(
+                            type=Type.STRING,
+                            description="Prospect's email address",
+                        ),
+                        "phone_number": types.Schema(
+                            type=Type.STRING,
+                            description="Prospect's phone number",
+                        ),
+                        "usecase": types.Schema(
+                            type=Type.STRING,
+                            description="The business problem or scenario the prospect described",
+                        ),
                     },
                     required=["name"],
                 ),
@@ -57,21 +71,65 @@ tools = [
 ]
 
 SYSTEM_PROMPT = """
-You are Jacqueline, a friendly voice AI sales assistant for TrueAILab.
-TrueAILab builds custom voice agents for businesses — AI phone assistants that work 24/7.
+You are Jacqueline, a friendly and knowledgeable voice AI sales assistant for TrueAILab.
 
-YOUR FLOW:
-1. Greet warmly: "Hi! This is Jacqueline from TrueAILab. We help businesses automate phone calls with AI. How are you today?"
-2. Ask their business and problem: "What kind of business do you run and where are phone calls causing you headaches?"
-3. Explain how a voice agent solves THEIR specific problem with a concrete benefit and number.
-4. Collect name, email, phone number — one at a time, confirm each back.
-5. Once you have all four (name, email, phone_number, usecase) call save_customer_info ONCE.
-6. Close: "Our team will reach out within 24 hours with a personalised demo. Thanks!"
+TrueAILab is a software engineering company that builds custom voice agents for businesses.
+Voice agents are AI-powered phone assistants that handle calls 24/7, collect leads, answer
+questions, book appointments, and automate repetitive phone tasks.
 
-RULES:
-- Short sentences. One question at a time. This is a phone call.
-- Never call save_customer_info more than once.
-- Be warm, consultative, never pushy.
+YOUR CONVERSATION FLOW — follow this order naturally, one step at a time:
+
+STEP 1 — GREET
+Introduce yourself warmly.
+"Hi! This is Jacqueline from TrueAILab. We help businesses automate their phone calls
+using AI voice agents. How are you doing today?"
+
+STEP 2 — UNDERSTAND THEIR PROBLEM
+Ask about their business and the problem they are trying to solve.
+"Tell me — what kind of business do you run, and where are phone calls causing
+you the most headache right now?"
+Listen fully. Common scenarios:
+- Appointment booking (clinics, salons, consultants)
+- Lead capture (real estate, insurance, agencies)
+- Customer support (e-commerce, SaaS, services)
+- Order taking (restaurants, delivery, retail)
+- Follow-up calls (sales teams, surveys, reminders)
+
+STEP 3 — VALIDATE WITH A PRODUCTIVITY INSIGHT
+Based on what they said, explain specifically how a voice agent solves THEIR problem.
+Always give a concrete benefit with a number.
+Examples:
+- "Clinics using voice agents reduce missed appointments by 40% because
+   the agent auto-confirms bookings even at midnight."
+- "Real estate agencies capture 3x more leads because the agent answers
+   every missed call instantly instead of going to voicemail."
+- "E-commerce teams cut support costs by 60% because the agent handles
+   order status and returns without a human."
+Be honest. If their scenario is not a strong fit for a voice agent, say so.
+
+STEP 4 — COLLECT CONTACT DETAILS
+Once they are interested and the problem is clear, say:
+"I'd love to get our team to put together a personalised demo for you.
+Could I get your name, email, and a phone number where we can reach you?"
+Collect name, email, and phone number one by one through natural conversation.
+Confirm each detail back to them as they give it.
+
+STEP 5 — SAVE AND CLOSE
+Once you have ALL FOUR pieces — name, email, phone number, and their use case —
+call save_customer_info ONCE with all four fields.
+Then say:
+"Perfect! Our team will be in touch within 24 hours with a demo built
+specifically for your scenario. Really appreciate your time today, goodbye!"
+
+STRICT RULES:
+- Keep sentences short. This is a voice call, not an email.
+- Never list multiple questions at once. Ask one thing at a time.
+- If they ask what a voice agent is:
+  "A voice agent is an AI that answers and makes phone calls exactly like a human —
+   it handles hundreds of calls at once, never sleeps, and never misses a lead."
+- Be warm, consultative, and confident. Never pushy.
+- When you have collected ALL FOUR pieces (name, email, phone_number, usecase),
+  call save_customer_info ONCE with all four fields, then say the closing line.
 """
 
 CONFIG = types.LiveConnectConfig(
@@ -123,12 +181,14 @@ def resample(data: bytes, from_rate: int, to_rate: int) -> bytes:
 
 
 async def send_to_webhook(data: dict):
+    """POST contact data to n8n webhook."""
     try:
         async with httpx.AsyncClient() as http:
-            r = await http.post(WEBHOOK_URL, json=data, timeout=5.0)
-            print(f"[Webhook] {data} → {r.status_code}")
+            response = await http.post(WEBHOOK_URL, json=data, timeout=5.0)
+            print(f"\n[Webhook] Sent: {json.dumps(data, indent=2)}")
+            print(f"[Webhook] Response: {response.status_code}")
     except Exception as e:
-        print(f"[Webhook error] {e}")
+        print(f"\n[Webhook] Error: {e}")
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -158,47 +218,38 @@ async def media_stream(websocket: WebSocket):
     stream_sid    = None
     customer_data = {}
     webhook_sent  = False
-    call_done     = asyncio.Event()
 
     try:
         async with client.aio.live.connect(model=MODEL, config=CONFIG) as session:
 
             async def from_twilio():
                 nonlocal stream_sid
-                try:
-                    async for raw in websocket.iter_text():
-                        msg   = json.loads(raw)
-                        event = msg.get("event")
+                async for raw in websocket.iter_text():
+                    msg   = json.loads(raw)
+                    event = msg.get("event")
 
-                        if event == "start":
-                            stream_sid = msg["start"]["streamSid"]
-                            print(f"[Call started] {stream_sid}")
+                    if event == "start":
+                        stream_sid = msg["start"]["streamSid"]
+                        print(f"[Call started] {stream_sid}")
 
-                        elif event == "media":
-                            ulaw   = base64.b64decode(msg["media"]["payload"])
-                            pcm8k  = ulaw_to_pcm16(ulaw)
-                            pcm16k = resample(pcm8k, 8000, 16000)
-                            await session.send_realtime_input(
-                                audio=types.Blob(mime_type="audio/pcm", data=pcm16k)
-                            )
+                    elif event == "media":
+                        ulaw   = base64.b64decode(msg["media"]["payload"])
+                        pcm8k  = ulaw_to_pcm16(ulaw)
+                        pcm16k = resample(pcm8k, 8000, 16000)
+                        await session.send_realtime_input(
+                            audio=types.Blob(mime_type="audio/pcm", data=pcm16k)
+                        )
 
-                        elif event == "stop":
-                            print("[Call ended]")
-                            break
-                except Exception:
-                    pass
-                finally:
-                    call_done.set()
+                    elif event == "stop":
+                        print("[Call ended]")
+                        break
 
             async def to_twilio():
                 nonlocal webhook_sent
                 try:
-                    while not call_done.is_set():
+                    while True:
                         turn = session.receive()
                         async for response in turn:
-                            if call_done.is_set():
-                                break
-
                             # Audio → send to caller
                             if response.data:
                                 try:
@@ -210,31 +261,43 @@ async def media_stream(websocket: WebSocket):
                                         "streamSid": stream_sid,
                                         "media":     {"payload": payload},
                                     })
-                                except Exception:
-                                    call_done.set()
-                                    break
+                                except Exception as e:
+                                    print(f"[to_twilio] send error: {e}")
+                                    return
 
-                            # Tool call → webhook
+                            # Tool call → save + webhook
                             if response.tool_call:
                                 for fc in response.tool_call.function_calls:
                                     if fc.name == "save_customer_info" and not webhook_sent:
                                         customer_data.update(fc.args)
                                         webhook_sent = True
-                                        print(f"[Lead] {customer_data}")
+                                        print(f"\n[Lead captured] {customer_data}")
                                         await send_to_webhook(customer_data)
                                         await session.send_tool_response(
                                             function_responses=[
                                                 types.FunctionResponse(
                                                     name=fc.name,
                                                     id=fc.id,
-                                                    response={"result": "Saved"},
+                                                    response={"result": "Saved successfully"},
                                                 )
                                             ]
                                         )
-                except Exception:
+                except asyncio.CancelledError:
                     pass
+                except Exception as e:
+                    print(f"[to_twilio] error: {e}")
 
-            await asyncio.gather(from_twilio(), to_twilio())
+            # Run to_twilio as a cancellable task — cancel it when the call ends
+            # so the Gemini session is properly closed and not left open/leaked.
+            to_twilio_task = asyncio.create_task(to_twilio())
+            try:
+                await from_twilio()
+            finally:
+                to_twilio_task.cancel()
+                await asyncio.gather(to_twilio_task, return_exceptions=True)
+                print(f"[Session closed] {stream_sid}")
 
     except Exception:
         traceback.print_exc()
+    finally:
+        await websocket.close()
