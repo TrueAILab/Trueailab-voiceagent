@@ -11,8 +11,6 @@ import json
 import os
 import traceback
 
-
-
 import httpx
 import numpy as np
 from fastapi import FastAPI, WebSocket, Request
@@ -65,7 +63,7 @@ tools = [
                             description="The business problem or scenario the prospect described",
                         ),
                     },
-                    required=["name"],
+                    required=["name", "email", "phone_number", "usecase"],
                 ),
             )
         ]
@@ -130,8 +128,10 @@ STRICT RULES:
   "A voice agent is an AI that answers and makes phone calls exactly like a human —
    it handles hundreds of calls at once, never sleeps, and never misses a lead."
 - Be warm, consultative, and confident. Never pushy.
-- When you have collected ALL FOUR pieces (name, email, phone_number, usecase),
-  call save_customer_info ONCE with all four fields, then say the closing line.
+- Collect name, email, and phone number quickly — aim to gather all contact details within 2–3 turns.
+- CRITICAL: Once you have ALL FOUR pieces (name, email, phone_number, usecase), you MUST call
+  save_customer_info immediately with all four fields. Do NOT skip this step under any circumstance.
+  Then say the closing line.
 """
 
 CONFIG = types.LiveConnectConfig(
@@ -225,7 +225,7 @@ async def media_stream(websocket: WebSocket):
         async with client.aio.live.connect(model=MODEL, config=CONFIG) as session:
 
             async def from_twilio():
-                nonlocal stream_sid
+                nonlocal stream_sid, webhook_sent
                 async for raw in websocket.iter_text():
                     msg   = json.loads(raw)
                     event = msg.get("event")
@@ -244,6 +244,10 @@ async def media_stream(websocket: WebSocket):
 
                     elif event == "stop":
                         print("[Call ended]")
+                        if customer_data and not webhook_sent:
+                            webhook_sent = True
+                            print(f"[Fallback lead save on call end] {customer_data}")
+                            await send_to_webhook(customer_data)
                         break
 
             async def to_twilio():
@@ -267,8 +271,12 @@ async def media_stream(websocket: WebSocket):
                                     print(f"[to_twilio] send error: {e}")
                                     return
 
+                            if response.text:
+                                print("[AI TEXT]:", response.text)
+
                             # Tool call → save + webhook
                             if response.tool_call:
+                                print("[TOOL CALL TRIGGERED]", [fc.name for fc in response.tool_call.function_calls])
                                 for fc in response.tool_call.function_calls:
                                     if fc.name == "save_customer_info" and not webhook_sent:
                                         customer_data.update(fc.args)
