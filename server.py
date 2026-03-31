@@ -223,16 +223,12 @@ async def media_stream(websocket: WebSocket):
     stream_sid    = None
     customer_data = {}
     webhook_sent  = False
+    kickstart_sent = False
 
     try:
         async with client.aio.live.connect(model=MODEL, config=CONFIG) as session:
-            print("[System] Sending kickstart prompt to Gemini...")
-            await session.send(
-                input="The user just answered the phone. Please say your greeting right now."
-            )
-
             async def from_twilio():
-                nonlocal stream_sid, webhook_sent
+                nonlocal stream_sid, webhook_sent, kickstart_sent
                 async for raw in websocket.iter_text():
                     msg   = json.loads(raw)
                     event = msg.get("event")
@@ -240,6 +236,19 @@ async def media_stream(websocket: WebSocket):
                     if event == "start":
                         stream_sid = msg["start"]["streamSid"]
                         print(f"[Call started] {stream_sid}")
+                        if not kickstart_sent:
+                            kickstart_sent = True
+                            print("[System] Sending kickstart prompt to Gemini...")
+                            await session.send_client_content(
+                                turns=types.Content(
+                                    role="user",
+                                    parts=[
+                                        types.Part(
+                                            text="The user just answered the phone. Please say your greeting right now."
+                                        )
+                                    ],
+                                )
+                            )
 
                     elif event == "media":
                         ulaw   = base64.b64decode(msg["media"]["payload"])
