@@ -71,27 +71,26 @@ tools = [
 ]
 
 SYSTEM_PROMPT = """
-You are Jacqueline, a friendly and knowledgeable voice AI sales assistant for TrueAILab.
+You are John, a friendly and knowledgeable voice AI sales assistant for TrueAILab.
 
 TrueAILab is a software engineering company that builds custom voice agents for businesses.
 Voice agents are AI-powered phone assistants that handle calls 24/7, collect leads, answer
 questions, book appointments, and automate repetitive phone tasks.
 
-YOUR CONVERSATION FLOW — follow this order naturally, one step at a time:
-
-STEP 1 — GREET
-Keep it very short. Just say:
-"Hi, I'm Jacqueline from TrueAILab. We build AI voice agents. How can I help you?"
+IMPORTANT — DO NOT speak first. Wait for the caller to speak. Respond only after they say something.
 
 AUDIBILITY CHECK — if the caller says anything like "can you hear me?", "hello?",
 "am I audible?", "are you there?", "can you hear me now?", or any similar check:
-Respond immediately: "Yes, I can hear you clearly!"
-Then do the short intro again: "I'm Jacqueline from TrueAILab. We build AI voice agents. How can I help you?"
+Respond immediately with: "Yes, I can hear you clearly! I'm John from TrueAILab — how can I help you?"
+
+YOUR CONVERSATION FLOW — follow this order naturally, one step at a time:
+
+STEP 1 — INTRODUCE BRIEFLY (only after caller speaks first)
+Keep it very short: "Hi, I'm John from TrueAILab. We build AI voice agents. How can I help you?"
 
 STEP 2 — UNDERSTAND THEIR PROBLEM
 Ask about their business and the problem they are trying to solve.
-"Tell me — what kind of business do you run, and where are phone calls causing
-you the most headache right now?"
+"Tell me — what kind of business do you run, and where are phone calls causing you the most headache right now?"
 Listen fully. Common scenarios:
 - Appointment booking (clinics, salons, consultants)
 - Lead capture (real estate, insurance, agencies)
@@ -103,39 +102,32 @@ STEP 3 — VALIDATE WITH A PRODUCTIVITY INSIGHT
 Based on what they said, explain specifically how a voice agent solves THEIR problem.
 Always give a concrete benefit with a number.
 Examples:
-- "Clinics using voice agents reduce missed appointments by 40% because
-   the agent auto-confirms bookings even at midnight."
-- "Real estate agencies capture 3x more leads because the agent answers
-   every missed call instantly instead of going to voicemail."
-- "E-commerce teams cut support costs by 60% because the agent handles
-   order status and returns without a human."
+- "Clinics using voice agents reduce missed appointments by 40% because the agent auto-confirms bookings even at midnight."
+- "Real estate agencies capture 3x more leads because the agent answers every missed call instantly instead of going to voicemail."
+- "E-commerce teams cut support costs by 60% because the agent handles order status and returns without a human."
 Be honest. If their scenario is not a strong fit for a voice agent, say so.
 
-STEP 4 — COLLECT CONTACT DETAILS
-Once they are interested and the problem is clear, say:
-"I'd love to get our team to put together a personalised demo for you.
-Could I get your name, email, and a phone number where we can reach you?"
-Collect name, email, and phone number one by one through natural conversation.
-Confirm each detail back to them as they give it.
+STEP 4 — COLLECT CONTACT DETAILS (one at a time, confirm each)
+Once they are interested and the problem is clear:
+"I'd love to get our team to put together a personalised demo for you. Could I grab your name?"
+Then ask for email, then phone number — one question at a time.
+Confirm each detail back naturally: "Got it, so that's john.smith@gmail.com — is that right?"
 
 STEP 5 — SAVE AND CLOSE
 Once you have ALL FOUR pieces — name, email, phone number, and their use case —
 call save_customer_info ONCE with all four fields.
-Then say:
-"Perfect! Our team will be in touch within 24 hours with a demo built
-specifically for your scenario. Really appreciate your time today, goodbye!"
+Then say: "Perfect! Our team will be in touch within 24 hours with a demo built just for you. Really appreciate your time, goodbye!"
 
 STRICT RULES:
-- Keep sentences short. This is a voice call, not an email.
-- Never list multiple questions at once. Ask one thing at a time.
+- NEVER speak first. Always wait for the caller.
+- NEVER repeat a sentence you already said in the same conversation.
+- Keep sentences short and natural — this is a phone call, not an email.
+- Never list multiple questions at once. One thing at a time.
+- Speak in a warm, conversational, human tone — use natural fillers like "sure", "absolutely", "got it".
 - If they ask what a voice agent is:
-  "A voice agent is an AI that answers and makes phone calls exactly like a human —
-   it handles hundreds of calls at once, never sleeps, and never misses a lead."
-- Be warm, consultative, and confident. Never pushy.
-- Collect name, email, and phone number quickly — aim to gather all contact details within 2–3 turns.
+  "A voice agent is an AI that handles phone calls just like a human — available 24/7, never misses a call."
 - CRITICAL: Once you have ALL FOUR pieces (name, email, phone_number, usecase), you MUST call
-  save_customer_info immediately with all four fields. Do NOT skip this step under any circumstance.
-  Then say the closing line.
+  save_customer_info immediately. Do NOT skip this. Then say the closing line.
 """
 
 CONFIG = types.LiveConnectConfig(
@@ -143,7 +135,7 @@ CONFIG = types.LiveConnectConfig(
     system_instruction=SYSTEM_PROMPT,
     speech_config=types.SpeechConfig(
         voice_config=types.VoiceConfig(
-            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Zephyr")
+            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
         )
     ),
     tools=tools,
@@ -207,6 +199,18 @@ async def root():
 @app.api_route("/incoming-call", methods=["GET", "POST"])
 async def incoming_call(request: Request):
     """Twilio hits this when someone calls your number."""
+    # Extract call metadata from Twilio's request
+    form = await request.form() if request.method == "POST" else {}
+    call_info = {
+        "event": "incoming_call",
+        "CallSid":    form.get("CallSid", ""),
+        "From":       form.get("From", ""),
+        "To":         form.get("To", ""),
+        "CallStatus": form.get("CallStatus", ""),
+    }
+    # Fire webhook immediately so n8n knows a call just arrived
+    await send_to_webhook(call_info)
+
     host = request.headers.get("host")
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -218,18 +222,22 @@ async def incoming_call(request: Request):
     return Response(content=twiml, media_type="application/xml")
 
 
+REQUIRED_FIELDS = {"name", "email", "phone_number", "usecase"}
+
+
 @app.websocket("/media-stream")
 async def media_stream(websocket: WebSocket):
     await websocket.accept()
-    stream_sid    = None
-    customer_data = {}
-    webhook_sent  = False
+    stream_sid         = None
+    customer_data      = {}
+    webhook_sent       = False
+    is_gemini_speaking = False   # True while Gemini is outputting audio; suppresses echo
 
     try:
         async with client.aio.live.connect(model=MODEL, config=CONFIG) as session:
 
             async def from_twilio():
-                nonlocal stream_sid, webhook_sent
+                nonlocal stream_sid, webhook_sent, is_gemini_speaking
                 async for raw in websocket.iter_text():
                     msg   = json.loads(raw)
                     event = msg.get("event")
@@ -239,6 +247,9 @@ async def media_stream(websocket: WebSocket):
                         print(f"[Call started] {stream_sid}")
 
                     elif event == "media":
+                        # Drop caller audio while Gemini is speaking to break echo loop
+                        if is_gemini_speaking:
+                            continue
                         ulaw   = base64.b64decode(msg["media"]["payload"])
                         pcm8k  = ulaw_to_pcm16(ulaw)
                         pcm16k = resample(pcm8k, 8000, 16000)
@@ -248,20 +259,22 @@ async def media_stream(websocket: WebSocket):
 
                     elif event == "stop":
                         print("[Call ended]")
-                        if customer_data and not webhook_sent:
+                        # Fallback: only send if ALL four required fields were collected
+                        if not webhook_sent and REQUIRED_FIELDS.issubset(customer_data):
                             webhook_sent = True
                             print(f"[Fallback lead save on call end] {customer_data}")
                             await send_to_webhook(customer_data)
                         break
 
             async def to_twilio():
-                nonlocal webhook_sent
+                nonlocal webhook_sent, is_gemini_speaking
                 try:
                     while True:
                         turn = session.receive()
                         async for response in turn:
-                            # Audio → send to caller
+                            # Audio → send to caller; mark Gemini as speaking
                             if response.data:
+                                is_gemini_speaking = True
                                 try:
                                     pcm8k   = resample(response.data, 24000, 8000)
                                     ulaw    = pcm16_to_ulaw(pcm8k)
@@ -278,15 +291,16 @@ async def media_stream(websocket: WebSocket):
                             if response.text:
                                 print("[AI TEXT]:", response.text)
 
-                            # Tool call → save + webhook
+                            # Tool call → require ALL four fields before sending webhook
                             if response.tool_call:
                                 print("[TOOL CALL TRIGGERED]", [fc.name for fc in response.tool_call.function_calls])
                                 for fc in response.tool_call.function_calls:
-                                    if fc.name == "save_customer_info" and not webhook_sent:
+                                    if fc.name == "save_customer_info":
                                         customer_data.update(fc.args)
-                                        webhook_sent = True
-                                        print(f"\n[Lead captured] {customer_data}")
-                                        await send_to_webhook(customer_data)
+                                        if not webhook_sent and REQUIRED_FIELDS.issubset(customer_data):
+                                            webhook_sent = True
+                                            print(f"\n[Lead captured] {customer_data}")
+                                            await send_to_webhook(customer_data)
                                         await session.send_tool_response(
                                             function_responses=[
                                                 types.FunctionResponse(
@@ -296,6 +310,10 @@ async def media_stream(websocket: WebSocket):
                                                 )
                                             ]
                                         )
+
+                        # Turn finished — Gemini is no longer speaking; accept caller audio again
+                        is_gemini_speaking = False
+
                 except asyncio.CancelledError:
                     pass
                 except Exception as e:
