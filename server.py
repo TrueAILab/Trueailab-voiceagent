@@ -199,14 +199,20 @@ async def root():
 @app.api_route("/incoming-call", methods=["GET", "POST"])
 async def incoming_call(request: Request):
     """Twilio hits this when someone calls your number."""
-    # Extract call metadata from Twilio's request
-    form = await request.form() if request.method == "POST" else {}
+    # Parse URL-encoded form body that Twilio sends (works with or without python-multipart)
+    params: dict = {}
+    if request.method == "POST":
+        body = await request.body()
+        from urllib.parse import parse_qs
+        qs = parse_qs(body.decode("utf-8"), keep_blank_values=True)
+        params = {k: v[0] for k, v in qs.items()}
+
     call_info = {
-        "event": "incoming_call",
-        "CallSid":    form.get("CallSid", ""),
-        "From":       form.get("From", ""),
-        "To":         form.get("To", ""),
-        "CallStatus": form.get("CallStatus", ""),
+        "event":      "incoming_call",
+        "CallSid":    params.get("CallSid", ""),
+        "From":       params.get("From", ""),
+        "To":         params.get("To", ""),
+        "CallStatus": params.get("CallStatus", ""),
     }
     # Fire webhook immediately so n8n knows a call just arrived
     await send_to_webhook(call_info)
