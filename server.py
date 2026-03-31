@@ -261,7 +261,7 @@ async def media_stream(websocket: WebSocket):
                         turn = session.receive()
                         async for response in turn:
                             # Audio → send to caller
-                            if response.data:
+                            if getattr(response, "data", None):
                                 try:
                                     pcm8k   = resample(response.data, 24000, 8000)
                                     ulaw    = pcm16_to_ulaw(pcm8k)
@@ -273,7 +273,6 @@ async def media_stream(websocket: WebSocket):
                                     })
                                 except Exception as e:
                                     print(f"[to_twilio] send error: {e}")
-                                    return
 
                             if response.text:
                                 print("[AI TEXT]:", response.text)
