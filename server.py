@@ -8,6 +8,7 @@ Set Twilio webhook to: https://YOUR-NGROK-URL/incoming-call
 import asyncio
 import base64
 import json
+import logging
 import os
 import traceback
 
@@ -21,6 +22,14 @@ from google.genai.types import Type
 from dotenv import load_dotenv
 
 load_dotenv(".env.local")
+
+# ── Logging setup ─────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-7s  %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("trueailab")
 
 app = FastAPI()
 
@@ -188,13 +197,16 @@ def resample(data: bytes, from_rate: int, to_rate: int) -> bytes:
 
 async def send_to_webhook(data: dict):
     """POST contact data to n8n webhook."""
+    log.info("─" * 60)
+    log.info("WEBHOOK CALL  →  %s", WEBHOOK_URL)
+    log.info("Payload: %s", json.dumps(data))
     try:
         async with httpx.AsyncClient() as http:
             response = await http.post(WEBHOOK_URL, json=data, timeout=5.0)
-            print(f"\n[Webhook] Sent: {json.dumps(data, indent=2)}")
-            print(f"[Webhook] Response: {response.status_code}")
+            log.info("Webhook response: HTTP %s  body=%s", response.status_code, response.text[:200])
     except Exception as e:
-        print(f"\n[Webhook] Error: {e}")
+        log.error("Webhook FAILED: %s", e)
+    log.info("─" * 60)
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -207,7 +219,11 @@ async def root():
 @app.api_route("/incoming-call", methods=["GET", "POST"])
 async def incoming_call(request: Request):
     """Twilio hits this when someone calls your number."""
+    call_sid = request.query_params.get("CallSid", "unknown")
     host = request.headers.get("host")
+    log.info("═" * 60)
+    log.info("INCOMING CALL  CallSid=%s  From=%s", call_sid, request.query_params.get("From", "unknown"))
+    log.info("Connecting media stream → wss://%s/media-stream", host)
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>
@@ -235,10 +251,12 @@ async def media_stream(websocket: WebSocket):
 
                     if event == "start":
                         stream_sid = msg["start"]["streamSid"]
-                        print(f"[Call started] {stream_sid}")
+                        log.info("═" * 60)
+                        log.info("CALL STARTED  streamSid=%s", stream_sid)
+                        log.info("═" * 60)
                         if not kickstart_sent:
                             kickstart_sent = True
-                            print("[System] Sending kickstart prompt to Gemini...")
+                            log.info("Sending kickstart prompt to Gemini...")
                             await session.send_client_content(
                                 turns=types.Content(
                                     role="user",
@@ -259,11 +277,17 @@ async def media_stream(websocket: WebSocket):
                         )
 
                     elif event == "stop":
-                        print("[Call ended]")
+                        stop_info = msg.get("stop", {})
+                        log.info("═" * 60)
+                        log.info("CALL STOPPED  streamSid=%s", stream_sid)
+                        log.info("Stop payload: %s", json.dumps(stop_info))
                         if customer_data and not webhook_sent:
                             webhook_sent = True
-                            print(f"[Fallback lead save on call end] {customer_data}")
+                            log.info("Fallback lead save triggered (call ended before tool call)")
                             await send_to_webhook(customer_data)
+                        elif not customer_data:
+                            log.info("Call ended — no lead data collected")
+                        log.info("═" * 60)
                         break
 
             async def to_twilio():
@@ -284,19 +308,17 @@ async def media_stream(websocket: WebSocket):
                                         "media":     {"payload": payload},
                                     })
                                 except Exception as e:
-                                    print(f"[to_twilio] send error: {e}")
-
-                            if response.text:
-                                print("[AI TEXT]:", response.text)
+                                    log.error("Audio send error: %s", e)
 
                             # Tool call → save + webhook
                             if response.tool_call:
-                                print("[TOOL CALL TRIGGERED]", [fc.name for fc in response.tool_call.function_calls])
+                                names = [fc.name for fc in response.tool_call.function_calls]
+                                log.info("TOOL CALL: %s", names)
                                 for fc in response.tool_call.function_calls:
                                     if fc.name == "save_customer_info" and not webhook_sent:
                                         customer_data.update(fc.args)
                                         webhook_sent = True
-                                        print(f"\n[Lead captured] {customer_data}")
+                                        log.info("Lead captured: %s", json.dumps(customer_data))
                                         await send_to_webhook(customer_data)
                                         await session.send_tool_response(
                                             function_responses=[
@@ -310,7 +332,8 @@ async def media_stream(websocket: WebSocket):
                 except asyncio.CancelledError:
                     pass
                 except Exception as e:
-                    print(f"[to_twilio] error: {e}")
+                    log.error("to_twilio error: %s", e)
+                    traceback.print_exc()
 
             # Run to_twilio as a cancellable task — cancel it when the call ends
             # so the Gemini session is properly closed and not left open/leaked.
@@ -320,9 +343,10 @@ async def media_stream(websocket: WebSocket):
             finally:
                 to_twilio_task.cancel()
                 await asyncio.gather(to_twilio_task, return_exceptions=True)
-                print(f"[Session closed] {stream_sid}")
+                log.info("Session closed  streamSid=%s", stream_sid)
 
     except Exception:
+        log.error("Unhandled exception in media_stream:")
         traceback.print_exc()
     finally:
         await websocket.close()
