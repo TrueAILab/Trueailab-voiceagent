@@ -36,9 +36,15 @@ app = FastAPI()
 MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-live-preview")
 WEBHOOK_URL = "https://n8n.trueailab.com/webhook/trueailab"
 
+_api_key = os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY") or ""
+log.info("═" * 60)
+log.info("STARTUP  model=%s", MODEL)
+log.info("STARTUP  api_key=%s", (_api_key[:8] + "..." + _api_key[-4:]) if len(_api_key) > 12 else ("SET" if _api_key else "MISSING ⚠️"))
+log.info("═" * 60)
+
 client = genai.Client(
     http_options={"api_version": "v1beta"},
-    api_key=os.environ.get("GOOGLE_API_KEY") or os.environ.get("GEMINI_API_KEY"),
+    api_key=_api_key or None,
 )
 
 tools = [
