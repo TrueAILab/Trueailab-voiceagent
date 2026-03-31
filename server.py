@@ -141,10 +141,6 @@ CONFIG = types.LiveConnectConfig(
     realtime_input_config=types.RealtimeInputConfig(
         turn_coverage=types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,
     ),
-    # Gemini 3.1: use thinkingLevel instead of thinkingBudget; minimal = lowest latency
-    generation_config=types.GenerationConfig(
-        thinking_config=types.ThinkingConfig(thinking_level="minimal"),
-    ),
     tools=tools,
 )
 
@@ -262,9 +258,13 @@ async def media_stream(websocket: WebSocket):
                         ulaw   = base64.b64decode(msg["media"]["payload"])
                         pcm8k  = ulaw_to_pcm16(ulaw)
                         pcm16k = resample(pcm8k, 8000, 16000)
-                        await session.send_realtime_input(
-                            audio=types.Blob(mime_type="audio/pcm", data=pcm16k)
-                        )
+                        try:
+                            await session.send_realtime_input(
+                                audio=types.Blob(mime_type="audio/pcm", data=pcm16k)
+                            )
+                        except Exception:
+                            # Gemini connection dropped; stop reading Twilio audio
+                            return
 
                     elif event == "stop":
                         print("[Call ended]")
@@ -283,8 +283,9 @@ async def media_stream(websocket: WebSocket):
                         async for response in turn:
                             # Process ALL parts in each server event (Gemini 3.1 can
                             # send multiple audio chunks + transcript in one event)
-                            if response.server_content and response.server_content.parts:
-                                for part in response.server_content.parts:
+                            sc = response.server_content
+                            if sc and sc.model_turn and sc.model_turn.parts:
+                                for part in sc.model_turn.parts:
                                     if part.inline_data and part.inline_data.data:
                                         try:
                                             pcm8k   = resample(part.inline_data.data, 24000, 8000)
