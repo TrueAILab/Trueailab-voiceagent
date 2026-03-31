@@ -210,7 +210,6 @@ async def incoming_call(request: Request):
     host = request.headers.get("host")
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say>Please hold.</Say>
     <Connect>
         <Stream url="wss://{host}/media-stream" />
     </Connect>
@@ -227,6 +226,10 @@ async def media_stream(websocket: WebSocket):
 
     try:
         async with client.aio.live.connect(model=MODEL, config=CONFIG) as session:
+            print("[System] Sending kickstart prompt to Gemini...")
+            await session.send(
+                input="The user just answered the phone. Please say your greeting right now."
+            )
 
             async def from_twilio():
                 nonlocal stream_sid, webhook_sent
