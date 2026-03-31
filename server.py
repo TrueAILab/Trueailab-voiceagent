@@ -138,6 +138,13 @@ CONFIG = types.LiveConnectConfig(
             prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Puck")
         )
     ),
+    realtime_input_config=types.RealtimeInputConfig(
+        turn_coverage=types.TurnCoverage.TURN_INCLUDES_ONLY_ACTIVITY,
+    ),
+    # Gemini 3.1: use thinkingLevel instead of thinkingBudget; minimal = lowest latency
+    generation_config=types.GenerationConfig(
+        thinking_config=types.ThinkingConfig(thinking_level="minimal"),
+    ),
     tools=tools,
 )
 
@@ -234,16 +241,15 @@ REQUIRED_FIELDS = {"name", "email", "phone_number", "usecase"}
 @app.websocket("/media-stream")
 async def media_stream(websocket: WebSocket):
     await websocket.accept()
-    stream_sid         = None
-    customer_data      = {}
-    webhook_sent       = False
-    is_gemini_speaking = False   # True while Gemini is outputting audio; suppresses echo
+    stream_sid    = None
+    customer_data = {}
+    webhook_sent  = False
 
     try:
         async with client.aio.live.connect(model=MODEL, config=CONFIG) as session:
 
             async def from_twilio():
-                nonlocal stream_sid, webhook_sent, is_gemini_speaking
+                nonlocal stream_sid, webhook_sent
                 async for raw in websocket.iter_text():
                     msg   = json.loads(raw)
                     event = msg.get("event")
@@ -253,9 +259,6 @@ async def media_stream(websocket: WebSocket):
                         print(f"[Call started] {stream_sid}")
 
                     elif event == "media":
-                        # Drop caller audio while Gemini is speaking to break echo loop
-                        if is_gemini_speaking:
-                            continue
                         ulaw   = base64.b64decode(msg["media"]["payload"])
                         pcm8k  = ulaw_to_pcm16(ulaw)
                         pcm16k = resample(pcm8k, 8000, 16000)
@@ -273,29 +276,28 @@ async def media_stream(websocket: WebSocket):
                         break
 
             async def to_twilio():
-                nonlocal webhook_sent, is_gemini_speaking
+                nonlocal webhook_sent
                 try:
                     while True:
                         turn = session.receive()
                         async for response in turn:
-                            # Audio → send to caller; mark Gemini as speaking
-                            if response.data:
-                                is_gemini_speaking = True
-                                try:
-                                    pcm8k   = resample(response.data, 24000, 8000)
-                                    ulaw    = pcm16_to_ulaw(pcm8k)
-                                    payload = base64.b64encode(ulaw).decode()
-                                    await websocket.send_json({
-                                        "event":     "media",
-                                        "streamSid": stream_sid,
-                                        "media":     {"payload": payload},
-                                    })
-                                except Exception as e:
-                                    print(f"[to_twilio] send error: {e}")
-                                    return
-
-                            if response.text:
-                                print("[AI TEXT]:", response.text)
+                            # Process ALL parts in each server event (Gemini 3.1 can
+                            # send multiple audio chunks + transcript in one event)
+                            if response.server_content and response.server_content.parts:
+                                for part in response.server_content.parts:
+                                    if part.inline_data and part.inline_data.data:
+                                        try:
+                                            pcm8k   = resample(part.inline_data.data, 24000, 8000)
+                                            ulaw    = pcm16_to_ulaw(pcm8k)
+                                            payload = base64.b64encode(ulaw).decode()
+                                            await websocket.send_json({
+                                                "event":     "media",
+                                                "streamSid": stream_sid,
+                                                "media":     {"payload": payload},
+                                            })
+                                        except Exception as e:
+                                            print(f"[to_twilio] send error: {e}")
+                                            return
 
                             # Tool call → require ALL four fields before sending webhook
                             if response.tool_call:
@@ -317,8 +319,6 @@ async def media_stream(websocket: WebSocket):
                                             ]
                                         )
 
-                        # Turn finished — Gemini is no longer speaking; accept caller audio again
-                        is_gemini_speaking = False
 
                 except asyncio.CancelledError:
                     pass
